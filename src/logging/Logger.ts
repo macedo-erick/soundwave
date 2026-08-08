@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { pino, type Logger as PinoLogger } from 'pino';
 import type { Config, LogLevel } from '../config/Config.js';
 
@@ -29,7 +30,7 @@ export class Logger {
           paths: ['token', '*.token', 'password', '*.password', 'authorization', '*.headers'],
           censor: '[redacted]',
         },
-        ...(config.isProduction
+        ...(config.isProduction || !Logger.canPrettyPrint()
           ? {}
           : {
               transport: {
@@ -43,6 +44,25 @@ export class Logger {
             }),
       }),
     );
+  }
+
+  /**
+   * Whether `pino-pretty` can be loaded from this install.
+   *
+   * It is a devDependency, so the production image built by `deps` does not
+   * carry it. Naming it as a transport target there kills the process at
+   * startup, which is what happens whenever that image runs with
+   * NODE_ENV=development — a combination worth supporting, since the same flag
+   * scopes command registration to the dev guild. Pretty output is a nicety;
+   * degrade to JSON rather than refuse to boot.
+   */
+  private static canPrettyPrint(): boolean {
+    try {
+      createRequire(import.meta.url).resolve('pino-pretty');
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Test seam: wraps a caller-supplied pino instance. */
