@@ -31,10 +31,12 @@ permissions:
   contents: read
 
 env:
-  # Mirrors planelyx's release.yml so every service lands in one Artifact Registry
-  # repository — and so the VPS's existing registry credentials cover this image too.
+  # Registries live in the shared core-platform project, one repository per
+  # application, rather than in each application's own project. The VPS then
+  # needs a single project-level read grant that covers every repository added
+  # later. See docs/artifact-registry-access.md.
   REGION: southamerica-east1
-  REPOSITORY: docker-remote-repo
+  REPOSITORY: soundwave
   IMAGE: soundwave
   VPS_PATH: soundwave
 
@@ -336,10 +338,13 @@ jobs:
       - name: Pull images against the staged .env
         run: |
           set -euo pipefail
-          # No registry login here: the image lives in the same Artifact Registry
-          # repository as the planelyx services, so the VPS's existing Docker
-          # credential helper already covers it. If this ever fails with
-          # "denied", run `gcloud auth configure-docker` on the box.
+          # No registry login here. Artifact Registry hostnames are per-region,
+          # not per-project, so the VPS has a single credential slot for this
+          # host and logging in again would replace the one planelyx uses.
+          # Access is instead granted by IAM: the identity the VPS already
+          # authenticates as needs Artifact Registry Reader on this project's
+          # repository. See docs/artifact-registry-access.md if this fails with
+          # "artifactregistry.repositories.downloadArtifacts denied".
           ssh $SSH_OPTS "$REMOTE" \
               "cd '$VPS_PATH' && docker compose -f compose.yaml --env-file .env.staged pull"
 

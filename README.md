@@ -206,15 +206,21 @@ A single workflow, `.github/workflows/ci.yml`, runs three jobs in sequence:
 Pull requests stop after `image`. The image is built **once** and the same bytes that were
 smoke-tested are the ones pushed — the push step retags the local image rather than rebuilding.
 
-The registry path matches the other services in the same project:
+Images go to a shared registry project rather than to Soundwave's own, one repository per
+application:
 
 ```
-southamerica-east1-docker.pkg.dev/<GCP_PROJECT_ID>/docker-remote-repo/soundwave
+southamerica-east1-docker.pkg.dev/core-platform/soundwave/soundwave
 ```
 
-Images are tagged with the commit SHA and `latest`. Because this is the same repository the
-existing services use, the VPS's Docker credential helper already covers it and the deploy
-performs no registry login of its own.
+They are tagged with the commit SHA and `latest`.
+
+The deploy performs no registry login on the VPS. Artifact Registry hostnames are per-region
+rather than per-project, so the VPS holds a single credential for that host and logging in
+again would replace the one other services depend on. Read access comes from IAM instead: the
+VPS is granted Artifact Registry Reader once at the **project** level, which covers every
+repository added later. Setup is in
+[docs/artifact-registry-access.md](docs/artifact-registry-access.md).
 
 Concurrency is set per job rather than per workflow: superseded `verify` runs are cancelled,
 but `deploy` never is — cancelling between `mv .env.staged .env` and the end of `up -d` would
@@ -231,20 +237,20 @@ reverted by the next deploy.
 
 ### Required repository secrets
 
-| Secret                  | Purpose                                               |
-| ----------------------- | ----------------------------------------------------- |
-| `GCP_PROJECT_ID`        | Artifact Registry project                             |
-| `GCP_SA_KEY`            | Service-account JSON key with Artifact Registry write |
-| `VPS_HOST`              | VPS hostname or IP                                    |
-| `VPS_USER`              | SSH user                                              |
-| `VPS_SSH_KEY`           | Private deploy key                                    |
-| `VPS_SSH_KNOWN_HOSTS`   | Output of `ssh-keyscan <host>` — pins the host key    |
-| `DISCORD_TOKEN`         | Bot token                                             |
-| `DISCORD_CLIENT_ID`     | Application ID                                        |
-| `LAVALINK_PASSWORD`     | Shared between the bot and Lavalink                   |
-| `SPOTIFY_CLIENT_ID`     | Optional, but must be set together with the secret    |
-| `SPOTIFY_CLIENT_SECRET` | Optional, but must be set together with the ID        |
-| `YT_REFRESH_TOKEN`      | Optional; the workflow warns when it is missing       |
+| Secret                  | Purpose                                            |
+| ----------------------- | -------------------------------------------------- |
+| `GCP_PROJECT_ID`        | The shared registry project (`core-platform`)      |
+| `GCP_SA_KEY`            | SA key, Artifact Registry Writer on `soundwave`    |
+| `VPS_HOST`              | VPS hostname or IP                                 |
+| `VPS_USER`              | SSH user                                           |
+| `VPS_SSH_KEY`           | Private deploy key                                 |
+| `VPS_SSH_KNOWN_HOSTS`   | Output of `ssh-keyscan <host>` — pins the host key |
+| `DISCORD_TOKEN`         | Bot token                                          |
+| `DISCORD_CLIENT_ID`     | Application ID                                     |
+| `LAVALINK_PASSWORD`     | Shared between the bot and Lavalink                |
+| `SPOTIFY_CLIENT_ID`     | Optional, but must be set together with the secret |
+| `SPOTIFY_CLIENT_SECRET` | Optional, but must be set together with the ID     |
+| `YT_REFRESH_TOKEN`      | Optional; the workflow warns when it is missing    |
 
 Optional repository **variables**: `LOG_LEVEL` (default `info`) and `IDLE_TIMEOUT_MINUTES`
 (default `5`).
@@ -337,6 +343,16 @@ produces `[host]:2222 …` entries. Host keys are public, so capturing all of th
 
 The `Configure SSH` step fails with a named error when the secret is empty, and otherwise
 reports how many entries were pinned and which key types they cover.
+
+**Deploy fails on the VPS with `artifactregistry.repositories.downloadArtifacts denied`**
+
+The push from GitHub and the pull on the VPS authenticate as different identities — the
+service account in `GCP_SA_KEY` never touches the VPS. This error means the identity the VPS
+uses cannot read the image, so a successful push tells you nothing about whether the pull will
+work. See [docs/artifact-registry-access.md](docs/artifact-registry-access.md).
+
+Note that Artifact Registry returns `denied` rather than `not found` for resources you cannot
+see, so a wrong `GCP_PROJECT_ID` produces exactly the same message.
 
 **Changes to `.env` are not taking effect**
 
