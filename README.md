@@ -195,12 +195,18 @@ after that.
 
 ## Deployment
 
-CI (`.github/workflows/ci.yml`) runs on every pull request and push to `master`: formatting,
-lint, typecheck, tests, and a production image build.
+A single workflow, `.github/workflows/ci.yml`, runs three jobs in sequence:
 
-On a green CI run of `master`, CD (`.github/workflows/cd.yml`) builds the image, pushes it to
-Google Artifact Registry, and deploys it to the VPS over SSH. The registry path matches the
-other services in the same project:
+| Job      | Runs on            | What it does                                                                                                                                      |
+| -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify` | every PR and push  | format check, lint, typecheck, tests                                                                                                              |
+| `image`  | every PR and push  | builds the image, then boots it with an empty environment to prove it fails with a readable config error; pushes to the registry only outside PRs |
+| `deploy` | pushes to `master` | ships config, renders `.env`, pulls, restarts, verifies                                                                                           |
+
+Pull requests stop after `image`. The image is built **once** and the same bytes that were
+smoke-tested are the ones pushed — the push step retags the local image rather than rebuilding.
+
+The registry path matches the other services in the same project:
 
 ```
 southamerica-east1-docker.pkg.dev/<GCP_PROJECT_ID>/docker-remote-repo/soundwave
@@ -209,6 +215,10 @@ southamerica-east1-docker.pkg.dev/<GCP_PROJECT_ID>/docker-remote-repo/soundwave
 Images are tagged with the commit SHA and `latest`. Because this is the same repository the
 existing services use, the VPS's Docker credential helper already covers it and the deploy
 performs no registry login of its own.
+
+Concurrency is set per job rather than per workflow: superseded `verify` runs are cancelled,
+but `deploy` never is — cancelling between `mv .env.staged .env` and the end of `up -d` would
+leave the VPS in a half-applied state.
 
 **The VPS holds no git checkout.** Each deploy ships `compose.yaml` and
 `lavalink/application.yml` from the commit being deployed, so the running configuration can
@@ -257,7 +267,7 @@ further checks close that gap:
 
 ### Rollback
 
-Run the **CD** workflow manually and give it a previous commit SHA as the tag. That skips the
+Run the **CI** workflow manually and give it a previous commit SHA as the tag. That skips the
 build entirely and redeploys the existing image. The previously deployed tag is also on the
 VPS in `~/soundwave/.env.prev`.
 
