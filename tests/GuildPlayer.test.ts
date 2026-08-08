@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Player, Track } from 'lavalink-client';
-import { GuildPlayer } from '../src/music/GuildPlayer.js';
+import { GuildPlayer, SUPPRESS_NEXT_ANNOUNCE } from '../src/music/GuildPlayer.js';
 import { QueueError } from '../src/errors/AppError.js';
 import { Logger } from '../src/logging/Logger.js';
 import type { ResolvedQuery } from '../src/music/types.js';
@@ -53,6 +53,8 @@ function makePlayer(overrides: Record<string, unknown> = {}) {
     stopPlaying: vi.fn().mockResolvedValue(undefined),
     connect: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
+    set: vi.fn(),
+    get: vi.fn(),
     ...overrides,
   };
 }
@@ -94,6 +96,24 @@ describe('GuildPlayer enqueue', () => {
     await player.enqueue(resolution('Song'));
 
     expect(raw.play).not.toHaveBeenCalled();
+  });
+
+  // The /play reply shows a "Now playing" card for a track that starts at once,
+  // so trackStart must not post a second one for the same track.
+  it('suppresses the trackStart announcement when it starts playback itself', async () => {
+    const { player, raw } = build();
+
+    await player.enqueue(resolution('Song'));
+
+    expect(raw.set).toHaveBeenCalledWith(SUPPRESS_NEXT_ANNOUNCE, true);
+  });
+
+  it('leaves the announcement alone when the track is only queued', async () => {
+    const { player, raw } = build({ playing: true });
+
+    await player.enqueue(resolution('Song'));
+
+    expect(raw.set).not.toHaveBeenCalled();
   });
 });
 

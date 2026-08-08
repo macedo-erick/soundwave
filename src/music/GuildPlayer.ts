@@ -3,6 +3,12 @@ import { QueueError } from '../errors/AppError.js';
 import type { Logger } from '../logging/Logger.js';
 import type { AnyTrack, ResolvedQuery } from './types.js';
 
+/**
+ * Set on the player when a command reply is already showing the track that is
+ * about to start, so the trackStart listener does not post a second card.
+ */
+export const SUPPRESS_NEXT_ANNOUNCE = 'suppressNextAnnounce';
+
 export interface EnqueueResult {
   readonly resolution: ResolvedQuery;
   readonly startedImmediately: boolean;
@@ -83,6 +89,7 @@ export class GuildPlayer {
 
     const shouldStart = !this.player.playing && !this.player.paused;
     if (shouldStart) {
+      this.player.set(SUPPRESS_NEXT_ANNOUNCE, true);
       await this.player.play();
     }
 

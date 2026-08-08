@@ -10,8 +10,9 @@ import { EmbedFactory } from '../ui/EmbedFactory.js';
  * resolve via LavaSrc, which reads the metadata and plays matching audio from
  * YouTube — Spotify's own streams are DRM-protected and cannot be played.
  *
- * A track that starts playing immediately is acknowledged briefly, because the
- * trackStart listener already posts the full now-playing embed.
+ * The reply is a card either way: "Now playing" when the track starts at once,
+ * "Added to queue" when it is queued behind something. The trackStart listener
+ * skips its own announcement in the first case to avoid posting a duplicate.
  *
  * The query is resolved before the bot joins the voice channel, so a dead link
  * fails cleanly rather than leaving it connected and idle.
@@ -72,7 +73,7 @@ export class PlayCommand extends Command {
     }
 
     const embed = startedImmediately
-      ? EmbedFactory.success(`Playing **${track.info.title}**`)
+      ? EmbedFactory.trackStarted(track, player.queueLength)
       : EmbedFactory.trackAdded(track, positionInQueue);
 
     await interaction.editReply({ embeds: [embed] });

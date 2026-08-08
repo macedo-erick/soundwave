@@ -82,6 +82,45 @@ export class EmbedFactory {
     return embed;
   }
 
+  /**
+   * Compact card for a track that started playing immediately, mirroring
+   * {@link trackAdded} so the two read as one family. The fuller
+   * {@link nowPlaying} card with its progress bar is reserved for `/nowplaying`,
+   * where elapsed time is actually meaningful.
+   */
+  public static trackStarted(track: AnyTrack, queueLength: number): EmbedBuilder {
+    const { info } = track;
+    const embed = new EmbedBuilder()
+      .setColor(Colors.primary)
+      .setAuthor({ name: 'Now playing' })
+      .setDescription(Format.trackLink(info.title, info.uri, 70))
+      .addFields(
+        {
+          name: 'Duration',
+          value: Format.duration(info.duration ?? 0, info.isStream ?? false),
+          inline: true,
+        },
+        { name: 'Source', value: Format.source(info.sourceName), inline: true },
+        {
+          name: 'Artist',
+          value: Format.truncate(info.author || 'Unknown', 30),
+          inline: true,
+        },
+      );
+
+    if (queueLength > 0) {
+      embed.addFields({
+        name: 'Up next',
+        value: `${queueLength} track${queueLength === 1 ? '' : 's'} queued`,
+        inline: true,
+      });
+    }
+
+    if (info.artworkUrl) embed.setThumbnail(info.artworkUrl);
+    EmbedFactory.applyRequesterFooter(embed, track);
+    return embed;
+  }
+
   public static playlistAdded(
     playlistName: string,
     trackCount: number,

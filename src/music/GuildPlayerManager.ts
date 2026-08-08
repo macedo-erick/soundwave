@@ -2,7 +2,7 @@ import { ChannelType, type Client, type GuildMember, type VoiceBasedChannel } fr
 import { AudioNodeError, VoiceChannelError } from '../errors/AppError.js';
 import type { Logger } from '../logging/Logger.js';
 import { EmbedFactory } from '../ui/EmbedFactory.js';
-import { GuildPlayer } from './GuildPlayer.js';
+import { GuildPlayer, SUPPRESS_NEXT_ANNOUNCE } from './GuildPlayer.js';
 import type { LavalinkService } from './LavalinkService.js';
 import type { TrackResolver } from './TrackResolver.js';
 import type { ResolvedQuery } from './types.js';
@@ -151,14 +151,16 @@ export class GuildPlayerManager {
       });
 
       if (!track) return;
+
+      // The /play reply already shows this track, so announcing it here would
+      // post a duplicate card. Only tracks that start on their own get one.
+      if (player.get<boolean>(SUPPRESS_NEXT_ANNOUNCE)) {
+        player.set(SUPPRESS_NEXT_ANNOUNCE, false);
+        return;
+      }
+
       void this.announce(player.guildId, player.textChannelId, () =>
-        EmbedFactory.nowPlaying({
-          track,
-          position: 0,
-          paused: false,
-          volume: player.volume,
-          queueLength: player.queue.tracks.length,
-        }),
+        EmbedFactory.trackStarted(track, player.queue.tracks.length),
       );
     });
 
