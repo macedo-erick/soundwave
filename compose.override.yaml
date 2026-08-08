@@ -1,0 +1,22 @@
+# Development overrides, merged automatically by `docker compose up`.
+# Production must opt out explicitly: `docker compose -f compose.yaml up -d`.
+
+services:
+  soundwave:
+    build:
+      target: dev
+    image: soundwave:dev
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    volumes:
+      - ./src:/app/src:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./tsconfig.build.json:/app/tsconfig.build.json:ro
+      - /app/node_modules
+    ports:
+      - '9229:9229'
+
+  lavalink:
+    ports:
+      - '2333:2333'

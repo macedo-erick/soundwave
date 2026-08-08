@@ -1,0 +1,74 @@
+name: soundwave
+
+services:
+  lavalink-init:
+    image: alpine:3.22
+    container_name: soundwave-lavalink-init
+    command: ['sh', '-c', 'mkdir -p /plugins && chown -R 322:322 /plugins']
+    volumes:
+      - lavalink-plugins:/plugins
+    networks:
+      - soundwave
+
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: soundwave-lavalink
+    restart: unless-stopped
+    depends_on:
+      lavalink-init:
+        condition: service_completed_successfully
+    environment:
+      _JAVA_OPTIONS: -Xmx${LAVALINK_MAX_HEAP:-1G}
+      SERVER_PORT: 2333
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      YT_REFRESH_TOKEN: ${YT_REFRESH_TOKEN:-}
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - lavalink-plugins:/opt/Lavalink/plugins
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'curl -fsS -H "Authorization: $${LAVALINK_SERVER_PASSWORD}" http://localhost:2333/version || exit 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    networks:
+      - soundwave
+    expose:
+      - '2333'
+
+  soundwave:
+    build:
+      context: .
+      target: runtime
+    image: ${SOUNDWAVE_IMAGE:-soundwave:local}
+    container_name: soundwave-bot
+    restart: unless-stopped
+    depends_on:
+      lavalink:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?DISCORD_TOKEN is required}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?DISCORD_CLIENT_ID is required}
+      DISCORD_DEV_GUILD_ID: ${DISCORD_DEV_GUILD_ID:-}
+      LAVALINK_HOST: lavalink
+      LAVALINK_PORT: 2333
+      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      LAVALINK_SECURE: 'false'
+      IDLE_TIMEOUT_MINUTES: ${IDLE_TIMEOUT_MINUTES:-5}
+    networks:
+      - soundwave
+
+networks:
+  soundwave:
+    driver: bridge
+
+volumes:
+  lavalink-plugins:

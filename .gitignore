@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Lavalink runtime artifacts
+lavalink/plugins/
+lavalink/logs/
+
+# Editors / OS
+.idea/
+.vscode/
+*.log
+.DS_Store
+
+requirements.md

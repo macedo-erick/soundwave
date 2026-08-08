@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+lavalink/plugins
+lavalink/logs
+*.log
+README.md
+requirements.md
