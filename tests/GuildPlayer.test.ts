@@ -3,7 +3,7 @@ import type { Player, Track } from 'lavalink-client';
 import { GuildPlayer } from '../src/music/GuildPlayer.js';
 import { QueueError } from '../src/errors/AppError.js';
 import { Logger } from '../src/logging/Logger.js';
-import type { TrackResolver } from '../src/music/TrackResolver.js';
+import type { ResolvedQuery } from '../src/music/types.js';
 import { pino } from 'pino';
 
 const silentLogger = Logger.fromPino(pino({ level: 'silent' }));
@@ -59,18 +59,19 @@ function makePlayer(overrides: Record<string, unknown> = {}) {
 
 function build(playerOverrides: Record<string, unknown> = {}) {
   const raw = makePlayer(playerOverrides);
-  const resolver = {
-    resolve: vi.fn().mockResolvedValue({ kind: 'track', tracks: [makeTrack('Song')] }),
-  } as unknown as TrackResolver;
-  const player = new GuildPlayer(raw as unknown as Player, resolver, silentLogger);
-  return { player, raw, resolver };
+  const player = new GuildPlayer(raw as unknown as Player, silentLogger);
+  return { player, raw };
+}
+
+function resolution(...titles: string[]): ResolvedQuery {
+  return { kind: 'track', tracks: titles.map(makeTrack) };
 }
 
 describe('GuildPlayer enqueue', () => {
   it('starts playback when the player is idle', async () => {
     const { player, raw } = build();
 
-    const result = await player.enqueue('a song', { id: 'u1' });
+    const result = await player.enqueue(resolution('Song'));
 
     expect(raw.queue.add).toHaveBeenCalledOnce();
     expect(raw.play).toHaveBeenCalledOnce();
@@ -80,7 +81,7 @@ describe('GuildPlayer enqueue', () => {
   it('only queues when something is already playing', async () => {
     const { player, raw } = build({ playing: true });
 
-    const result = await player.enqueue('a song', { id: 'u1' });
+    const result = await player.enqueue(resolution('Song'));
 
     expect(raw.queue.add).toHaveBeenCalledOnce();
     expect(raw.play).not.toHaveBeenCalled();
@@ -90,7 +91,7 @@ describe('GuildPlayer enqueue', () => {
   it('does not restart playback while paused', async () => {
     const { player, raw } = build({ playing: false, paused: true });
 
-    await player.enqueue('a song', { id: 'u1' });
+    await player.enqueue(resolution('Song'));
 
     expect(raw.play).not.toHaveBeenCalled();
   });

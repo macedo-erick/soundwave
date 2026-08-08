@@ -1,10 +1,11 @@
 import { ChannelType, type Client, type GuildMember, type VoiceBasedChannel } from 'discord.js';
-import { VoiceChannelError } from '../errors/AppError.js';
+import { AudioNodeError, VoiceChannelError } from '../errors/AppError.js';
 import type { Logger } from '../logging/Logger.js';
 import { EmbedFactory } from '../ui/EmbedFactory.js';
 import { GuildPlayer } from './GuildPlayer.js';
 import type { LavalinkService } from './LavalinkService.js';
 import type { TrackResolver } from './TrackResolver.js';
+import type { ResolvedQuery } from './types.js';
 
 export interface CreatePlayerOptions {
   readonly guildId: string;
@@ -31,7 +32,27 @@ export class GuildPlayerManager {
   /** Returns the guild's player, or null when the bot is not active there. */
   public get(guildId: string): GuildPlayer | null {
     const player = this.lavalinkService.lavalink.getPlayer(guildId);
-    return player ? new GuildPlayer(player, this.resolver, this.logger) : null;
+    return player ? new GuildPlayer(player, this.logger) : null;
+  }
+
+  /**
+   * Resolves a query against a connected node.
+   *
+   * Deliberately independent of any player: callers resolve first and only
+   * join a voice channel once there is something playable, so a bad link
+   * cannot leave the bot idling in a channel with an empty queue.
+   */
+  public async resolve(query: string, requester: unknown): Promise<ResolvedQuery> {
+    this.lavalinkService.assertReady();
+
+    const node = [...this.lavalinkService.lavalink.nodeManager.nodes.values()].find(
+      (candidate) => candidate.connected,
+    );
+    if (!node) {
+      throw new AudioNodeError('No connected Lavalink node is available to resolve a query');
+    }
+
+    return this.resolver.resolve(node, query, requester);
   }
 
   /**
@@ -68,7 +89,7 @@ export class GuildPlayerManager {
       volume: 100,
     });
 
-    const guildPlayer = new GuildPlayer(player, this.resolver, this.logger);
+    const guildPlayer = new GuildPlayer(player, this.logger);
     await guildPlayer.connect();
 
     this.logger.info('Created a player', {
@@ -190,7 +211,10 @@ export class GuildPlayerManager {
       if (!channel || channel.type !== ChannelType.GuildText) return;
       await channel.send({ embeds: [build()] });
     } catch (error) {
-      this.logger.debug('Could not post an announcement', {
+      // Warn rather than debug: playback keeps working, but the user sees no
+      // now-playing message at all, which reads as the bot being stuck.
+      // "Missing Access" here means the bot cannot post in that text channel.
+      this.logger.warn("Could not post an announcement — check the bot's channel permissions", {
         guildId,
         textChannelId,
         error: error instanceof Error ? error.message : String(error),

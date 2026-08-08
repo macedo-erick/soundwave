@@ -1,4 +1,4 @@
-import type { Player } from 'lavalink-client';
+import type { LavalinkNode } from 'lavalink-client';
 import { TrackResolutionError } from '../errors/AppError.js';
 import type { Logger } from '../logging/Logger.js';
 import type { AnyTrack, ResolvedQuery } from './types.js';
@@ -10,6 +10,9 @@ import type { AnyTrack, ResolvedQuery } from './types.js';
  * else is searched on the default platform. Spotify links resolve through the
  * LavaSrc plugin, which reads Spotify metadata and plays the matching audio
  * from YouTube — Spotify audio itself is DRM-protected and cannot be streamed.
+ *
+ * Resolution deliberately runs against a node rather than a player, so a query
+ * can be validated before the bot ever joins a voice channel.
  */
 export class TrackResolver {
   constructor(private readonly logger: Logger) {}
@@ -18,13 +21,17 @@ export class TrackResolver {
    * Resolves a query, throwing a user-facing error if nothing is playable.
    * A search yields many candidates; only the top match is queued.
    */
-  public async resolve(player: Player, query: string, requester: unknown): Promise<ResolvedQuery> {
+  public async resolve(
+    node: LavalinkNode,
+    query: string,
+    requester: unknown,
+  ): Promise<ResolvedQuery> {
     const trimmed = query.trim();
     if (trimmed.length === 0) {
       throw new TrackResolutionError('Give me something to play.');
     }
 
-    const result = await player.search({ query: trimmed }, requester);
+    const result = await node.search({ query: trimmed }, requester);
 
     switch (result.loadType) {
       case 'empty':

@@ -12,6 +12,9 @@ import { EmbedFactory } from '../ui/EmbedFactory.js';
  *
  * A track that starts playing immediately is acknowledged briefly, because the
  * trackStart listener already posts the full now-playing embed.
+ *
+ * The query is resolved before the bot joins the voice channel, so a dead link
+ * fails cleanly rather than leaving it connected and idle.
  */
 export class PlayCommand extends Command {
   public readonly name = 'play';
@@ -35,17 +38,18 @@ export class PlayCommand extends Command {
       throw new UserFacingError('I need a text channel to post updates in.', 'CHANNEL_UNSUPPORTED');
     }
 
+    // Resolved before the bot joins anything: a query that cannot be played
+    // must never leave it sitting in a voice channel with an empty queue.
+    const query = interaction.options.getString('query', true);
+    const resolution = await players.resolve(query, interaction.user);
+
     const player = await players.getOrCreate({
       guildId: interaction.guildId,
       voiceChannelId: voiceChannel.id,
       textChannelId: interaction.channelId,
     });
 
-    const query = interaction.options.getString('query', true);
-    const { resolution, startedImmediately, positionInQueue } = await player.enqueue(
-      query,
-      interaction.user,
-    );
+    const { startedImmediately, positionInQueue } = await player.enqueue(resolution);
 
     if (resolution.kind === 'playlist') {
       const total = resolution.tracks.reduce((sum, track) => sum + (track.info.duration ?? 0), 0);

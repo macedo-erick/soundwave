@@ -3,7 +3,7 @@ import { pino } from 'pino';
 import type { Client } from 'discord.js';
 import type { Player } from 'lavalink-client';
 import { GuildPlayerManager } from '../src/music/GuildPlayerManager.js';
-import { VoiceChannelError } from '../src/errors/AppError.js';
+import { AudioNodeError, TrackResolutionError, VoiceChannelError } from '../src/errors/AppError.js';
 import { Logger } from '../src/logging/Logger.js';
 import type { LavalinkService } from '../src/music/LavalinkService.js';
 import type { TrackResolver } from '../src/music/TrackResolver.js';
@@ -24,30 +24,33 @@ function makeRawPlayer(guildId: string, voiceChannelId = 'voice-1') {
   } as unknown as Player;
 }
 
-function build() {
+function build(options: { nodeConnected?: boolean; resolveImpl?: () => Promise<unknown> } = {}) {
   const players = new Map<string, Player>();
-  const createPlayer = vi.fn((options: { guildId: string; voiceChannelId: string }) => {
-    const player = makeRawPlayer(options.guildId, options.voiceChannelId);
-    players.set(options.guildId, player);
+  const createPlayer = vi.fn((opts: { guildId: string; voiceChannelId: string }) => {
+    const player = makeRawPlayer(opts.guildId, opts.voiceChannelId);
+    players.set(opts.guildId, player);
     return player;
   });
 
+  const node = { id: 'main', connected: options.nodeConnected ?? true };
   const lavalinkService = {
     lavalink: {
       getPlayer: (guildId: string) => players.get(guildId),
       createPlayer,
+      nodeManager: { nodes: new Map([['main', node]]) },
     },
     assertReady: vi.fn(),
   } as unknown as LavalinkService;
 
-  const manager = new GuildPlayerManager(
-    {} as Client,
-    lavalinkService,
-    {} as TrackResolver,
-    silentLogger,
+  const resolve = vi.fn(
+    options.resolveImpl ??
+      (() => Promise.resolve({ kind: 'track', tracks: [{ info: { title: 'Song' } }] })),
   );
+  const resolver = { resolve } as unknown as TrackResolver;
 
-  return { manager, players, createPlayer };
+  const manager = new GuildPlayerManager({} as Client, lavalinkService, resolver, silentLogger);
+
+  return { manager, players, createPlayer, resolve };
 }
 
 function makeMember(options: {
@@ -127,6 +130,39 @@ describe('GuildPlayerManager guild isolation', () => {
     const { manager } = build();
 
     expect(() => manager.require('guild-unknown')).toThrowError(VoiceChannelError);
+  });
+});
+
+describe('GuildPlayerManager.resolve', () => {
+  // Regression: /play used to join the voice channel before resolving, so a
+  // dead link left the bot connected to an empty queue with no idle timer
+  // armed — it sat there silently until someone ran /stop.
+  it('never creates a player when resolution fails', async () => {
+    const { manager, createPlayer } = build({
+      resolveImpl: () => Promise.reject(new TrackResolutionError('No results.')),
+    });
+
+    await expect(manager.resolve('a dead spotify link', { id: 'u1' })).rejects.toThrowError(
+      TrackResolutionError,
+    );
+    expect(createPlayer).not.toHaveBeenCalled();
+    expect(manager.get('guild-a')).toBeNull();
+  });
+
+  it('resolves against a connected node without touching voice', async () => {
+    const { manager, createPlayer, resolve } = build();
+
+    const result = await manager.resolve('a song', { id: 'u1' });
+
+    expect(result.tracks).toHaveLength(1);
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(createPlayer).not.toHaveBeenCalled();
+  });
+
+  it('fails clearly when no node is connected', async () => {
+    const { manager } = build({ nodeConnected: false });
+
+    await expect(manager.resolve('a song', { id: 'u1' })).rejects.toThrowError(AudioNodeError);
   });
 });
 

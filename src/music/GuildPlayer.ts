@@ -1,7 +1,6 @@
 import type { Player, Track } from 'lavalink-client';
 import { QueueError } from '../errors/AppError.js';
 import type { Logger } from '../logging/Logger.js';
-import type { TrackResolver } from './TrackResolver.js';
 import type { AnyTrack, ResolvedQuery } from './types.js';
 
 export interface EnqueueResult {
@@ -20,7 +19,6 @@ export interface EnqueueResult {
 export class GuildPlayer {
   constructor(
     private readonly player: Player,
-    private readonly resolver: TrackResolver,
     private readonly logger: Logger,
   ) {}
 
@@ -72,11 +70,13 @@ export class GuildPlayer {
   }
 
   /**
-   * Resolves a query, appends the result to the queue, and starts playback if
-   * the player was idle.
+   * Appends already-resolved tracks to the queue and starts playback if the
+   * player was idle.
+   *
+   * Resolution happens before this, in `GuildPlayerManager`, so that a query
+   * that cannot be played never causes the bot to join a voice channel.
    */
-  public async enqueue(query: string, requester: unknown): Promise<EnqueueResult> {
-    const resolution = await this.resolver.resolve(this.player, query, requester);
+  public async enqueue(resolution: ResolvedQuery): Promise<EnqueueResult> {
     const positionInQueue = this.queueLength + 1;
 
     await this.player.queue.add(resolution.tracks);
