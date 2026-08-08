@@ -321,20 +321,22 @@ curl -s -X POST https://accounts.spotify.com/api/token \
 
 **Deploy fails with `Host key verification failed` / `No ED25519 host key is known`**
 
-`VPS_SSH_KNOWN_HOSTS` does not contain the key type your server presents. The deploy pins the
-host key on purpose (`StrictHostKeyChecking=yes`), so the secret has to hold every key the
-server might offer. Capture them all — no `-t` flag — against the exact value in `VPS_HOST`,
-since a hostname and its IP are separate entries:
+That message means `known_hosts` held **no entry at all** for the host — most often because
+`VPS_SSH_KNOWN_HOSTS` is not set in this repository. GitHub secrets are per-repository, so one
+configured for another project does not apply here; only organization-level secrets are shared.
+
+The second cause is a host mismatch: the entry has to match the exact value in `VPS_HOST`,
+and a hostname and its IP are separate entries.
 
 ```bash
 ssh-keyscan your-vps-host
 ```
 
-Paste every line into the secret. On a non-default port use `ssh-keyscan -p 2222 host`, which
+Paste the output into the secret. On a non-default port use `ssh-keyscan -p 2222 host`, which
 produces `[host]:2222 …` entries. Host keys are public, so capturing all of them is safe.
 
-The `Configure SSH` step reports how many entries were pinned and which key types it saw, and
-warns when no ed25519 key is present.
+The `Configure SSH` step fails with a named error when the secret is empty, and otherwise
+reports how many entries were pinned and which key types they cover.
 
 **Changes to `.env` are not taking effect**
 

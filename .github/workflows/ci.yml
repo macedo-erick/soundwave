@@ -262,18 +262,18 @@ jobs:
           # failed" that names no cause, and the host is masked as *** in logs.
           # Report what was actually pinned before the first connection.
           # Host keys are public, so key types are safe to print.
-          if [[ ! -s ~/.ssh/deploy_known_hosts ]]; then
-              echo "::error::VPS_SSH_KNOWN_HOSTS is empty. Run 'ssh-keyscan <VPS_HOST>' and paste every line into the secret."
+          # Count real entries, not file size: an unset secret still writes a
+          # newline, so a size check would pass. `|| true` because grep exits 1
+          # on zero matches, which under `set -e` would abort with no message.
+          entries=$(grep -cve '^[[:space:]]*$' -e '^#' ~/.ssh/deploy_known_hosts || true)
+
+          if [[ ${entries:-0} -eq 0 ]]; then
+              echo "::error::VPS_SSH_KNOWN_HOSTS is empty or not set in this repository. GitHub secrets are per-repository, so one configured in another repo does not apply here. Run 'ssh-keyscan <VPS_HOST>' and paste the output into the secret."
               exit 1
           fi
 
           types=$(awk '{print $2}' ~/.ssh/deploy_known_hosts | sort -u | tr '\n' ' ')
-          entries=$(grep -cve '^\s*$' -e '^#' ~/.ssh/deploy_known_hosts)
-          echo "Pinned $entries known_hosts entry/entries; key types: ${types:-none}"
-
-          if [[ $types != *ssh-ed25519* ]]; then
-              echo "::warning::No ed25519 host key is pinned. Most servers offer ed25519 first, so the connection will fail with 'No ED25519 host key is known'. Capture all types with 'ssh-keyscan <VPS_HOST>' (no -t flag)."
-          fi
+          echo "Pinned $entries known_hosts entry/entries; key types: ${types:-unknown}"
 
           {
               echo "SSH_OPTS=-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -i $HOME/.ssh/deploy_key"
