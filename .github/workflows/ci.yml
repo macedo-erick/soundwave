@@ -1,18 +1,54 @@
 name: CI
 
+# Verify, build, and deploy in one pipeline.
+#
+# Pull requests run `verify` and `image` only. Pushes to master continue on to
+# `deploy`. `workflow_dispatch` with a tag skips straight to deploying an image
+# that already exists in the registry, which is the rollback path.
+#
+# The image is built exactly once, smoke-tested, and then pushed — so the bytes
+# that ship are the bytes that were tested.
+#
+# The VPS holds no git checkout: compose.yaml and lavalink/application.yml are
+# shipped from the commit being deployed, so the running config can never drift
+# from the image. `.env` is rendered from the repo secrets on every run, making
+# GitHub the source of truth — a value hand-edited on the box is reverted by the
+# next deploy. The one to watch is YT_REFRESH_TOKEN: if you re-authorise on the
+# VPS, update the secret too.
+
 on:
   pull_request:
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing image tag to redeploy (commit SHA) — blank builds from master'
+        type: string
+        default: ''
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
+
+env:
+  # Mirrors planelyx's release.yml so every service lands in one Artifact Registry
+  # repository — and so the VPS's existing registry credentials cover this image too.
+  REGION: southamerica-east1
+  REPOSITORY: docker-remote-repo
+  IMAGE: soundwave
+  VPS_PATH: soundwave
 
 jobs:
+  # ----------------------------------------------------------------- verify ----
   verify:
     name: Lint, typecheck, test
     runs-on: ubuntu-latest
+    if: ${{ inputs.tag == '' }}
+    # Superseded pushes are worth cancelling; the deploy job below is not, so
+    # concurrency is scoped per job rather than to the whole workflow.
+    concurrency:
+      group: verify-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
 
@@ -36,15 +72,31 @@ jobs:
       - name: Test
         run: yarn test
 
+  # ------------------------------------------------------------------ image ----
   image:
     name: Build image
     runs-on: ubuntu-latest
+    needs: verify
+    if: ${{ inputs.tag == '' }}
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      image: ${{ steps.resolve.outputs.image }}
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve image reference
+        id: resolve
+        run: |
+          set -euo pipefail
+          {
+              echo "tag=${{ github.sha }}"
+              echo "image=${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
 
-      # Build only — publishing happens in cd.yml after this workflow passes.
+      # Loaded into the local daemon rather than pushed, so the smoke test below
+      # runs against the exact image that will later be tagged and pushed.
       - name: Build production image
         uses: docker/build-push-action@v6
         with:
@@ -58,9 +110,324 @@ jobs:
 
       - name: Verify the image starts and validates its config
         run: |
-          # No token is supplied, so the bot must exit non-zero with a clear
-          # configuration error rather than crashing in an unexpected way.
+          set -euo pipefail
+          # Deliberately run with no environment: the bot must exit non-zero with a
+          # readable configuration error. That proves the image actually boots (Node
+          # starts, ESM resolves, dist/ is complete) and that validation fails fast
+          # rather than crashing somewhere unexpected.
           output=$(docker run --rm soundwave:ci 2>&1 || true)
-          echo "$output"
-          echo "$output" | grep -q "Invalid configuration" \
-            || { echo "::error::Image did not fail with a config validation error"; exit 1; }
+
+          if echo "$output" | grep -q "Invalid configuration"; then
+              echo "Image boots and rejects an empty configuration as expected."
+          else
+              echo "::error::Image did not fail with a config validation error. Output was:"
+              echo "$output"
+              exit 1
+          fi
+
+      # Service-account JSON key. The key already identifies the account, so no
+      # `service_account:` input — that one is for impersonation.
+      - uses: google-github-actions/auth@v2
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Push to Artifact Registry
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          IMAGE_REF: ${{ steps.resolve.outputs.image }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+          # Retagging the already-built image rather than rebuilding guarantees
+          # the pushed digest is the one the smoke test just exercised.
+          docker tag soundwave:ci "$IMAGE_REF:$TAG"
+          docker tag soundwave:ci "$IMAGE_REF:latest"
+          docker push "$IMAGE_REF:$TAG"
+          docker push "$IMAGE_REF:latest"
+
+  # ----------------------------------------------------------------- deploy ----
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: image
+    environment: production
+    # A hung SSH would otherwise sit on the 6-hour default.
+    timeout-minutes: 20
+    # Two deploys interleaving would race on a single .env. Never cancel one in
+    # flight: the dangerous window is between `mv .env.staged .env` and `up -d`.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    # `always()` so a dispatch that skipped the build still deploys.
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      (needs.image.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.tag != ''))
+    steps:
+      - uses: actions/checkout@v5
+
+      # Everything judgeable without touching the VPS is judged here, so a malformed
+      # request never reaches production.
+      - name: Validate inputs and secrets
+        id: validate
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          BUILT_TAG: ${{ needs.image.outputs.tag }}
+          BUILT_IMAGE: ${{ needs.image.outputs.image }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CLIENT_ID: ${{ secrets.DISCORD_CLIENT_ID }}
+          LAVALINK_PASSWORD: ${{ secrets.LAVALINK_PASSWORD }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail=0
+
+          tag=${INPUT_TAG:-$BUILT_TAG}
+          if [[ ! $tag =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+              echo "::error::Image tag '$tag' is invalid. Allowed: letters, digits, dot, underscore, hyphen (max 128)."
+              fail=1
+          fi
+
+          image=$BUILT_IMAGE
+          if [[ -z $image ]]; then
+              image="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}"
+          fi
+
+          # Required regardless of how the bot is configured. GCP_PROJECT_ID would
+          # otherwise render an image path with an empty segment, which fails much
+          # later as an opaque "invalid reference format".
+          for name in GCP_PROJECT_ID DISCORD_TOKEN DISCORD_CLIENT_ID LAVALINK_PASSWORD; do
+              [[ -n ${!name} ]] || { echo "::error::Repo secret $name is empty or not set."; fail=1; }
+          done
+
+          # Optional, but a half-configured Spotify pair fails at runtime rather than
+          # here, so catch the mismatch now.
+          if { [[ -n $SPOTIFY_CLIENT_ID ]] && [[ -z $SPOTIFY_CLIENT_SECRET ]]; } \
+              || { [[ -z $SPOTIFY_CLIENT_ID ]] && [[ -n $SPOTIFY_CLIENT_SECRET ]]; }; then
+              echo "::error::SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must both be set, or both be empty."
+              fail=1
+          fi
+
+          if [[ -z $YT_REFRESH_TOKEN ]]; then
+              echo "::warning::YT_REFRESH_TOKEN is not set. Playback will work, but the bot is far more likely to hit YouTube's bot challenge on a datacenter IP. See the README."
+          fi
+
+          # Compose's dotenv parser is not a shell: inside single quotes it has no escape
+          # sequence, so a value containing ' cannot be represented. Values are rendered
+          # single-quoted because that is the only form Compose leaves un-interpolated —
+          # unquoted, a secret containing $ is silently truncated.
+          for name in DISCORD_TOKEN LAVALINK_PASSWORD SPOTIFY_CLIENT_ID SPOTIFY_CLIENT_SECRET YT_REFRESH_TOKEN; do
+              if [[ ${!name} == *"'"* ]]; then
+                  echo "::error::Repo secret $name contains a single quote, which cannot be represented in a Compose .env value. Regenerate it without one."
+                  fail=1
+              fi
+          done
+
+          (( fail == 0 )) || exit 1
+
+          {
+              echo "tag=$tag"
+              echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+          echo "Deploying $image:$tag"
+
+      # Plain openssh rather than a marketplace action: nothing third-party then handles
+      # the deploy key. StrictHostKeyChecking is only meaningful because known_hosts is
+      # pinned from a secret.
+      - name: Configure SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          umask 077
+          # The trailing newline is required — openssh rejects a key file without one as
+          # "invalid format", which reads like a corrupt key rather than a missing byte.
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts
+
+          {
+              echo "SSH_OPTS=-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -i $HOME/.ssh/deploy_key"
+              echo "REMOTE=$VPS_USER@$VPS_HOST"
+          } >> "$GITHUB_ENV"
+
+      # Shipping the compose file and Lavalink config from this commit is what removes
+      # the need for a git checkout on the VPS — and with it the stale-checkout failure
+      # mode, where a deploy silently runs against an older topology.
+      - name: Ship compose and Lavalink config
+        run: |
+          set -euo pipefail
+          ssh $SSH_OPTS "$REMOTE" "mkdir -p '$VPS_PATH/lavalink'"
+          tar -cz compose.yaml lavalink/application.yml \
+              | ssh $SSH_OPTS "$REMOTE" "tar -xzC '$VPS_PATH'"
+          echo "Shipped compose.yaml and lavalink/application.yml"
+
+      # Staged, not installed. The pull below proves the tag exists in the registry, and
+      # until it succeeds .env is untouched and no container has been recreated — so a
+      # mistyped tag costs a red run and nothing else.
+      - name: Stage the rendered .env
+        env:
+          IMAGE_REF: ${{ steps.validate.outputs.image }}
+          TAG: ${{ steps.validate.outputs.tag }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CLIENT_ID: ${{ secrets.DISCORD_CLIENT_ID }}
+          LAVALINK_PASSWORD: ${{ secrets.LAVALINK_PASSWORD }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'info' }}
+          IDLE_TIMEOUT_MINUTES: ${{ vars.IDLE_TIMEOUT_MINUTES || '5' }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          rendered=$(
+              printf '# Rendered by .github/workflows/ci.yml (run %s). Hand edits are lost on the next deploy.\n' "$GITHUB_RUN_ID"
+              printf 'SOUNDWAVE_IMAGE=%s:%s\n' "$IMAGE_REF" "$TAG"
+              printf 'NODE_ENV=production\n'
+              printf 'LOG_LEVEL=%s\n' "$LOG_LEVEL"
+              printf 'IDLE_TIMEOUT_MINUTES=%s\n' "$IDLE_TIMEOUT_MINUTES"
+              printf 'DISCORD_CLIENT_ID=%s\n' "$DISCORD_CLIENT_ID"
+              printf 'DISCORD_DEV_GUILD_ID=\n'
+              printf "DISCORD_TOKEN='%s'\n" "$DISCORD_TOKEN"
+              printf "LAVALINK_PASSWORD='%s'\n" "$LAVALINK_PASSWORD"
+              printf "SPOTIFY_CLIENT_ID='%s'\n" "$SPOTIFY_CLIENT_ID"
+              printf "SPOTIFY_CLIENT_SECRET='%s'\n" "$SPOTIFY_CLIENT_SECRET"
+              printf "YT_REFRESH_TOKEN='%s'\n" "$YT_REFRESH_TOKEN"
+          )
+
+          # Piped rather than scp'd: scp without -p lands the file at the remote umask
+          # (0644) and only then gets chmod'ed, leaving credentials briefly world-readable.
+          # A pipe also keeps them out of argv, and therefore out of `ps` on the VPS.
+          printf '%s\n' "$rendered" \
+              | ssh $SSH_OPTS "$REMOTE" "umask 077 && cat > '$VPS_PATH/.env.staged'"
+
+          echo "Staged .env on the VPS (contents deliberately not logged)."
+
+      - name: Pull images against the staged .env
+        run: |
+          set -euo pipefail
+          # No registry login here: the image lives in the same Artifact Registry
+          # repository as the planelyx services, so the VPS's existing Docker
+          # credential helper already covers it. If this ever fails with
+          # "denied", run `gcloud auth configure-docker` on the box.
+          ssh $SSH_OPTS "$REMOTE" \
+              "cd '$VPS_PATH' && docker compose -f compose.yaml --env-file .env.staged pull"
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          # .env.prev is the only record of the previously deployed tag, since it is
+          # deliberately not committed. It is what a rollback reads.
+          # The braces matter: without them `|| true` would also swallow a failed `cd`,
+          # and the deploy would run against whatever is in the login directory.
+          #
+          # -f compose.yaml is explicit so compose.override.yaml (development, hot
+          # reload) is never merged. --no-build guarantees the pulled image is what
+          # runs rather than a local rebuild.
+          ssh $SSH_OPTS "$REMOTE" \
+              "cd '$VPS_PATH' && { cp .env .env.prev 2>/dev/null || true; } && mv .env.staged .env \
+               && docker compose -f compose.yaml up -d --wait --wait-timeout 300 --no-build --remove-orphans"
+
+      # -------------------------------------------------------------- verify ----
+      - name: Verify the stack
+        run: |
+          set -euo pipefail
+          fail=0
+          remote_compose="cd '$VPS_PATH' && docker compose -f compose.yaml"
+
+          # `--wait` already gated on Lavalink's healthcheck, so confirming it here is
+          # cheap insurance against a healthcheck that was edited into uselessness.
+          health=$(ssh $SSH_OPTS "$REMOTE" "docker inspect --format '{{.State.Health.Status}}' soundwave-lavalink") || health=""
+          if [[ $health == healthy ]]; then
+              echo "lavalink: healthy"
+          else
+              echo "::error::lavalink: health is '${health:-unreachable}', expected 'healthy'."
+              fail=1
+          fi
+
+          # The bot declares no healthcheck, so `--wait` settles for "running" — a
+          # crash-looping container would pass that gate the instant it came up. Give it
+          # a dwell and check the restart counter, the only signal separating the two.
+          cid=$(ssh $SSH_OPTS "$REMOTE" "$remote_compose ps -q soundwave | tail -n1") || cid=""
+          if [[ -z $cid ]]; then
+              echo "::error::soundwave has no container after up."
+              fail=1
+          else
+              before=$(ssh $SSH_OPTS "$REMOTE" "docker inspect --format '{{.RestartCount}}' $cid")
+              sleep 20
+              after=$(ssh $SSH_OPTS "$REMOTE" "docker inspect --format '{{.RestartCount}}' $cid")
+              state=$(ssh $SSH_OPTS "$REMOTE" "docker inspect --format '{{.State.Status}}' $cid")
+
+              if [[ $state == running && $after == "$before" ]]; then
+                  echo "soundwave: stable (no restarts during dwell)"
+              else
+                  echo "::error::soundwave is not stable (state: ${state:-unknown}, restarts: ${before:-?} -> ${after:-?})."
+                  fail=1
+              fi
+          fi
+
+          # The single most valuable assertion here. This line is only logged after the
+          # gateway connection, the Lavalink handshake and the slash-command deploy have
+          # all succeeded, so it covers everything a running-but-broken bot would hide.
+          ready=""
+          for _ in $(seq 1 10); do
+              if ssh $SSH_OPTS "$REMOTE" "$remote_compose logs --tail 200 soundwave" 2>/dev/null \
+                  | grep -q 'Soundwave is ready'; then
+                  ready=yes
+                  break
+              fi
+              sleep 6
+          done
+
+          if [[ $ready == yes ]]; then
+              echo "soundwave: reported ready (logged in, Lavalink connected, commands deployed)"
+          else
+              echo "::error::soundwave never logged 'Soundwave is ready' within 60s. Recent logs:"
+              ssh $SSH_OPTS "$REMOTE" "$remote_compose logs --tail 50 soundwave" || true
+              fail=1
+          fi
+
+          (( fail == 0 )) || exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          IMAGE_REF: ${{ steps.validate.outputs.image }}
+          TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+              echo "## Deploy — ${{ job.status }}"
+              echo
+              echo "| | |"
+              echo "|---|---|"
+              echo "| Image | \`${IMAGE_REF:-—}:${TAG:-—}\` |"
+              echo "| Trigger | \`${{ github.event_name }}\` |"
+              echo "| Built | ${{ needs.image.result == 'success' && 'yes' || 'no (redeployed existing tag)' }} |"
+              echo
+              echo "Rollback: re-run this workflow with the previous commit SHA as the tag, or read \`.env.prev\` on the VPS."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # `if: always()` cannot help when SSH itself is what failed, so the compose file
+      # also has to tolerate a leftover .env.staged. Nothing reads it, so a stale one is
+      # inert rather than dangerous.
+      - name: Clean up
+        if: always()
+        run: |
+          if [[ -n ${REMOTE:-} ]]; then
+              ssh $SSH_OPTS "$REMOTE" "rm -f '$VPS_PATH/.env.staged'" || true
+          fi
+          rm -f ~/.ssh/deploy_key ~/.ssh/deploy_known_hosts
