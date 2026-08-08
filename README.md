@@ -319,6 +319,23 @@ curl -s -X POST https://accounts.spotify.com/api/token \
   -d "grant_type=client_credentials&client_id=$SPOTIFY_CLIENT_ID&client_secret=$SPOTIFY_CLIENT_SECRET"
 ```
 
+**Deploy fails with `Host key verification failed` / `No ED25519 host key is known`**
+
+`VPS_SSH_KNOWN_HOSTS` does not contain the key type your server presents. The deploy pins the
+host key on purpose (`StrictHostKeyChecking=yes`), so the secret has to hold every key the
+server might offer. Capture them all — no `-t` flag — against the exact value in `VPS_HOST`,
+since a hostname and its IP are separate entries:
+
+```bash
+ssh-keyscan your-vps-host
+```
+
+Paste every line into the secret. On a non-default port use `ssh-keyscan -p 2222 host`, which
+produces `[host]:2222 …` entries. Host keys are public, so capturing all of them is safe.
+
+The `Configure SSH` step reports how many entries were pinned and which key types it saw, and
+warns when no ed25519 key is present.
+
 **Changes to `.env` are not taking effect**
 
 `docker compose restart` reuses the existing container and its baked-in environment. Use

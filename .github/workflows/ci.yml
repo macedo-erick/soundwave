@@ -258,6 +258,23 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
           printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts
 
+          # StrictHostKeyChecking=yes fails with a bare "Host key verification
+          # failed" that names no cause, and the host is masked as *** in logs.
+          # Report what was actually pinned before the first connection.
+          # Host keys are public, so key types are safe to print.
+          if [[ ! -s ~/.ssh/deploy_known_hosts ]]; then
+              echo "::error::VPS_SSH_KNOWN_HOSTS is empty. Run 'ssh-keyscan <VPS_HOST>' and paste every line into the secret."
+              exit 1
+          fi
+
+          types=$(awk '{print $2}' ~/.ssh/deploy_known_hosts | sort -u | tr '\n' ' ')
+          entries=$(grep -cve '^\s*$' -e '^#' ~/.ssh/deploy_known_hosts)
+          echo "Pinned $entries known_hosts entry/entries; key types: ${types:-none}"
+
+          if [[ $types != *ssh-ed25519* ]]; then
+              echo "::warning::No ed25519 host key is pinned. Most servers offer ed25519 first, so the connection will fail with 'No ED25519 host key is known'. Capture all types with 'ssh-keyscan <VPS_HOST>' (no -t flag)."
+          fi
+
           {
               echo "SSH_OPTS=-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/deploy_known_hosts -i $HOME/.ssh/deploy_key"
               echo "REMOTE=$VPS_USER@$VPS_HOST"
