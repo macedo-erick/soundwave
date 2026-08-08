@@ -33,9 +33,11 @@ container, which does all the extraction and streaming:
 docker compose
 ├── soundwave   Node 24 / TypeScript — commands, queue logic, embeds
 │     └── ws ──► lavalink:2333
-└── lavalink    audio extraction and streaming
-      ├── youtube-source   YouTube playback
-      └── lavasrc          Spotify link resolution
+├── lavalink    audio extraction and streaming
+│     ├── youtube-source   YouTube playback
+│     │     └── http ──► yt-cipher:8001
+│     └── lavasrc          Spotify link resolution
+└── yt-cipher   YouTube signature deciphering
 ```
 
 This split is deliberate. YouTube challenges requests coming from datacenter IP ranges with
@@ -43,6 +45,15 @@ _"Sign in to confirm you're not a bot"_, which is why bots that stream YouTube d
 work locally and fail once deployed to a server. The `youtube-source` plugin handles that with
 client rotation and OAuth, and it is actively maintained — when YouTube changes something you
 bump a plugin version instead of debugging the bot.
+
+**Why there is a third container.** YouTube signs its stream URLs, and the signature has to be
+deciphered by running a function pulled out of YouTube's own `base.js`. The plugin ships an
+extractor for that, but it can only be fixed by a plugin release — so whenever YouTube rotates
+the player script into a shape the pinned version cannot parse, every client fails at once with
+`Must find sig function from script` and there is nothing to bump yet. `yt-cipher` does the
+deciphering instead, out of process, so that failure mode stops being gated on the plugin's
+release cadence. It is the one image here deliberately left unpinned, since tracking YouTube is
+its entire job.
 
 **A note on Spotify:** Spotify's audio is DRM-protected and cannot be streamed by any bot. When
 you pass a Spotify link, the `lavasrc` plugin reads its metadata (title, artist, ISRC) and plays
@@ -251,6 +262,7 @@ reverted by the next deploy.
 | `SPOTIFY_CLIENT_ID`     | Optional, but must be set together with the secret |
 | `SPOTIFY_CLIENT_SECRET` | Optional, but must be set together with the ID     |
 | `YT_REFRESH_TOKEN`      | Optional; the workflow warns when it is missing    |
+| `YT_CIPHER_PASSWORD`    | Optional; the cipher port is never published       |
 
 Optional repository **variables**: `LOG_LEVEL` (default `info`) and `IDLE_TIMEOUT_MINUTES`
 (default `5`).
@@ -261,7 +273,7 @@ deployed to `~/soundwave`.
 ### What the deploy verifies
 
 `docker compose up --wait` only gates on Lavalink's healthcheck — the bot declares none, so
-`--wait` settles for "running" and would happily green-light a crash-looping container. Two
+`--wait` settles for "running" and would happily green-light a crash-looping container. Three
 further checks close that gap:
 
 1. **Restart-counter dwell** — the counter is sampled, the job waits, and samples again. A
@@ -270,6 +282,9 @@ further checks close that gap:
    That line is only reached after the gateway connection, the Lavalink handshake, and the
    slash-command deploy have all succeeded, so it covers everything a running-but-broken bot
    would otherwise hide.
+3. **Remote cipher assertion** — the job greps Lavalink's logs for `Using remote cipher
+server`. A `remoteCipher` block that silently fails to apply leaves a perfectly healthy
+   stack that dies on the first track instead, which no other check here would catch.
 
 ### Rollback
 
@@ -287,13 +302,46 @@ This is YouTube challenging your server's IP. In order:
 
 1. Complete [the OAuth step](#4-authorise-youtube-important) if you skipped it.
 2. Bump the `youtube-plugin` version in `lavalink/application.yml` — fixes ship there, and
-   the pinned version ages.
+   the pinned version ages. Check that a newer release actually exists before assuming this
+   is the fix; the pinned version is often already the latest.
 3. If the VPS has an IPv6 `/64` block, add a `ratelimit` section to `lavalink/application.yml`
    to rotate outbound addresses.
+
+Deciphering failures are a separate problem with a separate fix — see
+[`AllClientsFailedException`](#allclientsfailedexception--every-client-failed-on-one-track)
+below to tell the two apart before touching OAuth.
 
 Note that `clients` in `lavalink/application.yml` must include `TV` for OAuth to have any
 effect — it is the only OAuth-capable client. Lavalink warns about this at startup if you
 remove it.
+
+**`AllClientsFailedException` — every client failed on one track**
+
+Read the per-client lines rather than the top-level message; they usually do not share a cause.
+`MUSIC` is search-only and never appears there, so its absence is not a symptom.
+
+| Per-client line                                 | What it means                                                                                                      |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `Must find sig function from script: …/base.js` | The signature extractor cannot parse YouTube's current player script. See below.                                   |
+| `This video requires login`                     | YouTube bot-flagged the request. Expected on `WEB`/`ANDROID_VR` from a datacenter IP — OAuth only applies to `TV`. |
+| `Video player configuration error`              | `WEBEMBEDDED` was refused; harmless unless every other client also failed.                                         |
+
+If `TVHTML5` is the one reaching `Must find sig function`, OAuth is working — it got past the
+login check and died deciphering. Confirm the cipher container is up and Lavalink bound to it:
+
+```bash
+docker compose ps yt-cipher
+docker compose logs lavalink | grep 'Using remote cipher server'
+```
+
+No log line means Lavalink is using its own extractor, and the `remoteCipher` block in
+`lavalink/application.yml` did not apply. If the container is up and it still fails, the
+cipher server itself is behind — `docker compose pull yt-cipher && docker compose up -d`,
+since it is intentionally tracking a moving tag. `YT_CIPHER_URL` can point at an external
+server instead, such as the public `https://cipher.kikkia.dev` (10 req/s).
+
+Note there is **no fallback**: once a cipher URL is set, an unreachable server fails playback
+rather than reverting to the local extractor. That is why the deploy asserts the log line above.
 
 **The bot is online but every command errors**
 

@@ -48,12 +48,32 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
+    # Order is the fallback order. MUSIC is search-only and never attempts
+    # playback, so it will not appear in an AllClientsFailedException. TV is
+    # first because it is the only OAuth-capable client, and OAuth is what gets
+    # past "This video requires login" on a datacenter IP. TVHTML5_SIMPLY is the
+    # one playback client that needs neither OAuth nor a poToken, so it is the
+    # backstop when the refresh token expires.
     clients:
       - MUSIC
       - TV
+      - TVHTML5_SIMPLY
       - ANDROID_VR
       - WEB
       - WEBEMBEDDED
+    # Signature deciphering is delegated to the yt-cipher container rather than
+    # the plugin's bundled extractor. The bundled one can only be fixed by a
+    # plugin release; when YouTube rotates base.js in between, every client that
+    # gets as far as a format URL dies with "Must find sig function from script".
+    #
+    # The default must stay a real URL, never empty. The plugin switches to the
+    # remote manager on `url != null` and an empty string satisfies that, so a
+    # blank value would route every decipher at nothing — and there is no
+    # fallback to the local extractor once the remote one is selected.
+    remoteCipher:
+      url: '${YT_CIPHER_URL:http://yt-cipher:8001}'
+      password: '${YT_CIPHER_PASSWORD:}'
+      userAgent: 'soundwave'
     oauth:
       enabled: true
       refreshToken: '${YT_REFRESH_TOKEN:}'

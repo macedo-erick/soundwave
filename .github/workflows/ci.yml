@@ -188,6 +188,10 @@ jobs:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          # Unset secrets render as empty, which is a valid value here — but the
+          # name must still be bound, since the quote check below reads it
+          # indirectly and this step runs under `set -u`.
+          YT_CIPHER_PASSWORD: ${{ secrets.YT_CIPHER_PASSWORD }}
         run: |
           set -euo pipefail
           fail=0
@@ -226,7 +230,7 @@ jobs:
           # sequence, so a value containing ' cannot be represented. Values are rendered
           # single-quoted because that is the only form Compose leaves un-interpolated —
           # unquoted, a secret containing $ is silently truncated.
-          for name in DISCORD_TOKEN LAVALINK_PASSWORD SPOTIFY_CLIENT_ID SPOTIFY_CLIENT_SECRET YT_REFRESH_TOKEN; do
+          for name in DISCORD_TOKEN LAVALINK_PASSWORD SPOTIFY_CLIENT_ID SPOTIFY_CLIENT_SECRET YT_REFRESH_TOKEN YT_CIPHER_PASSWORD; do
               if [[ ${!name} == *"'"* ]]; then
                   echo "::error::Repo secret $name contains a single quote, which cannot be represented in a Compose .env value. Regenerate it without one."
                   fail=1
@@ -306,6 +310,7 @@ jobs:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_CIPHER_PASSWORD: ${{ secrets.YT_CIPHER_PASSWORD }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'info' }}
           IDLE_TIMEOUT_MINUTES: ${{ vars.IDLE_TIMEOUT_MINUTES || '5' }}
         run: |
@@ -325,6 +330,10 @@ jobs:
               printf "SPOTIFY_CLIENT_ID='%s'\n" "$SPOTIFY_CLIENT_ID"
               printf "SPOTIFY_CLIENT_SECRET='%s'\n" "$SPOTIFY_CLIENT_SECRET"
               printf "YT_REFRESH_TOKEN='%s'\n" "$YT_REFRESH_TOKEN"
+              # Read by both yt-cipher (as API_TOKEN) and Lavalink, so they cannot
+              # disagree. Empty is valid: the cipher port is never published, so an
+              # unauthenticated service is only reachable from the compose network.
+              printf "YT_CIPHER_PASSWORD='%s'\n" "$YT_CIPHER_PASSWORD"
           )
 
           # Piped rather than scp'd: scp without -p lands the file at the remote umask
@@ -377,6 +386,19 @@ jobs:
               echo "lavalink: healthy"
           else
               echo "::error::lavalink: health is '${health:-unreachable}', expected 'healthy'."
+              fail=1
+          fi
+
+          # A remoteCipher block that fails to bind (renamed key, unshipped config,
+          # empty URL) is silent: Lavalink starts clean and playback only dies later,
+          # on the first track, with the same "Must find sig function" this replaced.
+          # The plugin logs this line at INFO whenever it selects the remote manager,
+          # so it is the one signal that separates "configured" from "shipped".
+          if ssh $SSH_OPTS "$REMOTE" "$remote_compose logs --tail 500 lavalink" 2>/dev/null \
+              | grep -q 'Using remote cipher server'; then
+              echo "lavalink: remote cipher engaged"
+          else
+              echo "::error::Lavalink never logged 'Using remote cipher server' — signature deciphering fell back to the plugin's local extractor, which is what breaks playback on a new player script."
               fail=1
           fi
 

@@ -10,6 +10,36 @@ services:
     networks:
       - soundwave
 
+  # Deciphers YouTube's signature/n parameters. The youtube-plugin ships its own
+  # local extractor, but it can only be fixed by a plugin release — when YouTube
+  # rotates base.js to a shape it cannot parse, playback dies with "Must find sig
+  # function from script" until upstream cuts a version. Delegating to yt-cipher
+  # decouples that from the plugin's release cadence.
+  #
+  # Deliberately NOT pinned, unlike every other image here: tracking YouTube's
+  # player changes is the entire job of this container, so a pinned tag would
+  # reintroduce the staleness the service exists to remove. `compose pull` on
+  # each deploy is what picks up cipher fixes.
+  yt-cipher:
+    image: ghcr.io/kikkia/yt-cipher:master
+    container_name: soundwave-yt-cipher
+    restart: unless-stopped
+    environment:
+      # Only the IAS script variant works reliably upstream; without this the
+      # server follows YouTube's variant and intermittently fails to decipher.
+      OVERRIDE_PLAYER_VARIANT: IAS
+      # Empty disables auth entirely, which is survivable only because the port
+      # is never published — it is reachable on the compose network alone.
+      API_TOKEN: ${YT_CIPHER_PASSWORD:-}
+      PORT: 8001
+    networks:
+      - soundwave
+    expose:
+      - '8001'
+    # No healthcheck: the image is distroless and has neither a shell nor curl,
+    # so there is nothing to run a probe with. `--wait` settles for "running",
+    # and Lavalink only calls this lazily on the first decipher anyway.
+
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4
     container_name: soundwave-lavalink
@@ -17,6 +47,8 @@ services:
     depends_on:
       lavalink-init:
         condition: service_completed_successfully
+      yt-cipher:
+        condition: service_started
     environment:
       _JAVA_OPTIONS: -Xmx${LAVALINK_MAX_HEAP:-1G}
       SERVER_PORT: 2333
@@ -24,6 +56,8 @@ services:
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
       YT_REFRESH_TOKEN: ${YT_REFRESH_TOKEN:-}
+      YT_CIPHER_URL: ${YT_CIPHER_URL:-http://yt-cipher:8001}
+      YT_CIPHER_PASSWORD: ${YT_CIPHER_PASSWORD:-}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - lavalink-plugins:/opt/Lavalink/plugins
