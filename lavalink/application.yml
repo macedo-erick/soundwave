@@ -4,8 +4,9 @@ server:
 
 lavalink:
   plugins:
-    - dependency: 'dev.lavalink.youtube:youtube-plugin:1.18.2'
-      snapshot: false
+    - dependency: 'dev.lavalink.youtube:youtube-plugin:f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3'
+      repository: 'https://maven.lavalink.dev/snapshots'
+      snapshot: true
     - dependency: 'com.github.topi314.lavasrc:lavasrc-plugin:4.8.3'
       repository: 'https://maven.lavalink.dev/releases'
       snapshot: false
@@ -51,7 +52,7 @@ plugins:
     clients:
       - MUSIC
       - TV
-      - TVHTML5_SIMPLY
+      - IOS
       - ANDROID_VR
       - WEB
       - WEBEMBEDDED
@@ -71,8 +72,8 @@ plugins:
       deezer: false
       yandexmusic: false
     providers:
-      - 'ytsearch:"%ISRC%"'
-      - 'ytsearch:%QUERY%'
+      - 'ytmsearch:"%ISRC%"'
+      - 'ytmsearch:%QUERY%'
     spotify:
       clientId: '${SPOTIFY_CLIENT_ID:}'
       clientSecret: '${SPOTIFY_CLIENT_SECRET:}'

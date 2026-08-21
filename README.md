@@ -301,9 +301,11 @@ VPS in `~/soundwave/.env.prev`.
 This is YouTube challenging your server's IP. In order:
 
 1. Complete [the OAuth step](#4-authorise-youtube-important) if you skipped it.
-2. Bump the `youtube-plugin` version in `lavalink/application.yml` — fixes ship there, and
-   the pinned version ages. Check that a newer release actually exists before assuming this
-   is the fix; the pinned version is often already the latest.
+2. Update the `youtube-plugin` pin in `lavalink/application.yml` — fixes ship there, and the
+   pin ages. Check that a newer _release_ actually exists first; it is often already the
+   latest. When the fix is only on `main`, pin the commit hash instead and point the entry at
+   `https://maven.lavalink.dev/snapshots` with `snapshot: true`, which is what the current pin
+   does.
 3. If the VPS has an IPv6 `/64` block, add a `ratelimit` section to `lavalink/application.yml`
    to rotate outbound addresses.
 
@@ -320,11 +322,12 @@ remove it.
 Read the per-client lines rather than the top-level message; they usually do not share a cause.
 `MUSIC` is search-only and never appears there, so its absence is not a symptom.
 
-| Per-client line                                 | What it means                                                                                                      |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `Must find sig function from script: …/base.js` | The signature extractor cannot parse YouTube's current player script. See below.                                   |
-| `This video requires login`                     | YouTube bot-flagged the request. Expected on `WEB`/`ANDROID_VR` from a datacenter IP — OAuth only applies to `TV`. |
-| `Video player configuration error`              | `WEBEMBEDDED` was refused; harmless unless every other client also failed.                                         |
+| Per-client line                                 | What it means                                                                                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `Must find sig function from script: …/base.js` | The signature extractor cannot parse YouTube's current player script. See below.                                                      |
+| `This video requires login`                     | YouTube bot-flagged the request. Expected on `WEB`/`ANDROID_VR` from a datacenter IP — OAuth only applies to `TV`.                    |
+| `Video player configuration error`              | `WEBEMBEDDED` was refused; harmless unless every other client also failed.                                                            |
+| `The page needs to be reloaded`                 | `TV` was refused. Since `TV` is the only OAuth-capable client, OAuth is contributing nothing and every remaining client is anonymous. |
 
 If `TVHTML5` is the one reaching `Must find sig function`, OAuth is working — it got past the
 login check and died deciphering. Confirm the cipher container is up and Lavalink bound to it:
