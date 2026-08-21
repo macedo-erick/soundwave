@@ -3,7 +3,6 @@ import { Command, type CommandContext, type CommandData } from '../core/Command.
 import { EmbedFactory } from '../ui/EmbedFactory.js';
 import { Format } from '../ui/Format.js';
 
-/** Pauses playback, keeping the queue and position intact. */
 export class PauseCommand extends Command {
   public readonly name = 'pause';
   public override readonly deferReply = true;

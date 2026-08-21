@@ -2,7 +2,6 @@ import { SlashCommandBuilder } from 'discord.js';
 import { Command, type CommandContext, type CommandData } from '../core/Command.js';
 import { EmbedFactory } from '../ui/EmbedFactory.js';
 
-/** Randomises the pending queue, leaving the current track playing. */
 export class ShuffleCommand extends Command {
   public readonly name = 'shuffle';
   public override readonly deferReply = true;

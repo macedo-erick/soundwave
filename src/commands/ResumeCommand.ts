@@ -3,7 +3,6 @@ import { Command, type CommandContext, type CommandData } from '../core/Command.
 import { EmbedFactory } from '../ui/EmbedFactory.js';
 import { Format } from '../ui/Format.js';
 
-/** Resumes playback after a pause. */
 export class ResumeCommand extends Command {
   public readonly name = 'resume';
   public override readonly deferReply = true;

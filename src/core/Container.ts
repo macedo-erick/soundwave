@@ -76,7 +76,6 @@ export class Container {
     );
   }
 
-  /** Attaches all listeners and connects to Discord. */
   public async start(): Promise<void> {
     this.logger.info('Starting Soundwave', this.config.toRedactedJSON());
 

@@ -68,7 +68,6 @@ export class GuildPlayer {
     return this.player.connected === true;
   }
 
-  /** Joins the voice channel if not already connected. */
   public async connect(): Promise<void> {
     if (!this.connected) {
       await this.player.connect();

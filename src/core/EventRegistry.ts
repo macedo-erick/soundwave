@@ -31,7 +31,6 @@ export class EventRegistry {
     return this;
   }
 
-  /** Attaches every registered handler to the client. */
   public attachAll(): void {
     for (const handler of this.handlers) {
       const listener = (...args: unknown[]) => {

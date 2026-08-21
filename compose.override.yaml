@@ -21,9 +21,6 @@ services:
     ports:
       - '2333:2333'
 
-  # Published in development only, so a failing decipher can be reproduced
-  # directly against the API instead of through Lavalink. In production it stays
-  # on the compose network, which is what makes the empty password acceptable.
   yt-cipher:
     ports:
       - '8001:8001'

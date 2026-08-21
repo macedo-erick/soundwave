@@ -3,7 +3,6 @@ import { Command, type CommandContext, type CommandData } from '../core/Command.
 import { EmbedFactory } from '../ui/EmbedFactory.js';
 import { Format } from '../ui/Format.js';
 
-/** Skips the current track and advances to the next queued one. */
 export class SkipCommand extends Command {
   public readonly name = 'skip';
   public override readonly deferReply = true;

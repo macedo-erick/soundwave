@@ -20,7 +20,6 @@ export interface LogContext {
 export class Logger {
   private constructor(private readonly pinoLogger: PinoLogger) {}
 
-  /** Builds the root logger from validated config. */
   public static create(config: Config): Logger {
     return new Logger(
       pino({

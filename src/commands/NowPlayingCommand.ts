@@ -2,7 +2,6 @@ import { SlashCommandBuilder } from 'discord.js';
 import { Command, type CommandContext, type CommandData } from '../core/Command.js';
 import { EmbedFactory } from '../ui/EmbedFactory.js';
 
-/** Shows the current track with a progress bar and queue summary. */
 export class NowPlayingCommand extends Command {
   public readonly name = 'nowplaying';
   public override readonly deferReply = true;
